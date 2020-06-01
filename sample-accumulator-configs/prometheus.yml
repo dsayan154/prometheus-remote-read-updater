@@ -1,0 +1,12 @@
+# my global config
+global:
+  scrape_interval:     15s
+  evaluation_interval: 30s
+  # scrape_timeout is set to the global default (10s).
+
+remote_read:
+  - url: http://remote1/read
+    name: remote1
+  - url: http://remote2/read
+    name: remote2
+
