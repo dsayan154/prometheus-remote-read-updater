@@ -3,10 +3,15 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
+	"github.com/prometheus/common/config"
+	promconfig "github.com/prometheus/prometheus/config"
+	yaml "gopkg.in/yaml.v2"
 	v1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,6 +24,7 @@ var (
 	stsNamespace, stsName, configNameToUpdate     string
 	stsNsIsSet, stsNameIsSet, configToUpdateIsSet bool
 	clientset                                     *kubernetes.Clientset
+	prometheusContainerPort                       int
 )
 
 func main() {
@@ -29,6 +35,17 @@ func main() {
 	if !stsNsIsSet || !stsNameIsSet || !configToUpdateIsSet {
 		log.Fatalln("NAMESPACE/STS_NAME/CONFIG_TO_UPDATE environment variable not set(required). Exiting...")
 	}
+	// optional
+	prometheusContainerPortStr, ok := os.LookupEnv("PROM_CONTAINER_PORT")
+	if !ok {
+		prometheusContainerPortStr = "9090"
+	}
+	var err error
+	prometheusContainerPort, err = strconv.Atoi(prometheusContainerPortStr)
+	if err != nil {
+		log.Fatalf("Error: main: Cannot convert prometheusContainerPortStr to integer\n")
+	}
+
 	// create a rest config
 	kubeconfig := filepath.Join(os.Getenv("HOME"), ".kube", "config")
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
@@ -85,7 +102,7 @@ func runLoop(namespace string, lsOpts *metav1.ListOptions) error {
 				break
 			}
 			if event.Type == watch.Error {
-				// if the event type is error, the return the error from the watch event object
+				// if the event type is error, return the error from the watch event object
 				return apierrors.FromObject(event.Object)
 			}
 			// call event handler function
@@ -105,10 +122,6 @@ func allEventHandler(event *watch.Event) error {
 	// print  sample output: the replica details for that statefulset
 	log.Printf("Event type: %v name: %v, Ready Replicas: %v Current Replicas: %d\n", event.Type, sts.Name, sts.Status.ReadyReplicas, sts.Status.CurrentReplicas)
 	// Begin configmap processing:
-	// 1. access the configmap CONFIG_TO_UPDATE data, in the same namespace
-	// 2. get the prometheus.yml from configmap data
-	// 3. convert the string prometheus.yml to yaml. unmarshal the yaml. update the .remote_read list depending on the ReadyReplicas
-	// 4. create a slice of map[string]string
 	log.Println("Starting configmap processing...")
 
 	// 1. access the configmap CONFIG_TO_UPDATE data, in the same namespace
@@ -122,13 +135,48 @@ func allEventHandler(event *watch.Event) error {
 	}
 	log.Printf("Successfully fetched the configmap: %s\n", configmapKey)
 	// 2. get the prometheus.yml from configmap data
-	promtheusConfig, ok := configmap.Data["prometheus.yml"]
+	promtheusConfigData, ok := configmap.Data["prometheus.yml"]
 	if !ok {
-		log.Printf("Error: allEventHandler: Promtheus.yml not found in configmap: %s, %s", configmapKey, promtheusConfig)
-		return fmt.Errorf("Promtheus.yml not found in configmap: %s, %s", configmapKey, promtheusConfig)
+		log.Printf("Error: allEventHandler: Promtheus.yml not found in configmap: %s", configmapKey)
+		return fmt.Errorf("Promtheus.yml not found in configmap: %s", configmapKey)
 	}
-	log.Printf("prometheus.yml:\n%s\n", promtheusConfig)
-	// 3. convert the string prometheus.yml to yaml. unmarshal the yaml. update the .remote_read list depending on the ReadyReplicas
+	// log.Printf("prometheus.yml:\n%s\n", promtheusConfigData)
+	// 3.a. unmarshal the string prometheus.yml data to prometheus config struct objects
+	var prometheusConfig *promconfig.Config
+	if prometheusConfig, err = promconfig.Load(promtheusConfigData); err != nil {
+		log.Printf("Error: allEventHandler: unable to unmarshal the yaml to prometheus config\n")
+		return fmt.Errorf("unable to unmarshal the yaml to prometheus config")
+	}
+	// 3.b. reset and update the .remote_read list depending on the ReadyReplicas
+	headlessServiceName := sts.Spec.ServiceName
+	var count int32
+	prometheusConfig.RemoteReadConfigs = nil
+	for ; count < sts.Status.CurrentReplicas; count++ {
+		urlStr := fmt.Sprintf("http://%s-%d.%s:%d/read", stsName, count, headlessServiceName, prometheusContainerPort)
+		remoteReadURL, err := url.Parse(urlStr)
+		if err != nil {
+			log.Printf("Error: allEventHandler: Cannot parse remoteReadUrl: %v\n", err)
+			return err
+		}
+		remoteReadConfig := promconfig.RemoteReadConfig{
+			URL:        &config.URL{URL: remoteReadURL},
+			ReadRecent: true,
+		}
+		prometheusConfig.RemoteReadConfigs = append(prometheusConfig.RemoteReadConfigs, &remoteReadConfig)
+	}
+	newPromtheusConfigData, err := yaml.Marshal(prometheusConfig)
+	if err != nil {
+		log.Printf("Error: allEventHandler: Error marshalling the modified prometheusConfig\n")
+		return fmt.Errorf("Error marshalling the modified prometheusConfig")
+	}
+	// 4. change the prometheus.yml in configmap data
+	configmap.Data["prometheus.yml"] = string(newPromtheusConfigData)
 
+	// 5. update the configmap
+	configmapModified, err := clientset.CoreV1().ConfigMaps(namespace).Update(configmap)
+	if err != nil {
+		log.Printf("Error: allEventHandler: Error returned by api server while updating the configmap: %v\n", err)
+	}
+	log.Printf("Configmap data updated. Following is the configmap data: %s\n", configmapModified.Data["prometheus.yml"])
 	return nil
 }
