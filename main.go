@@ -13,12 +13,12 @@ import (
 	promconfig "github.com/prometheus/prometheus/config"
 	yaml "gopkg.in/yaml.v2"
 	v1 "k8s.io/api/apps/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog"
 )
 
 var (
@@ -65,100 +65,82 @@ func main() {
 		log.Fatalf("Error creating clientset: %v", err)
 	}
 
-	stsInformerFactory := informers.NewSharedInformerFactory(clientset, 30*time.Second)
+	stsInformerFactory := informers.NewFilteredSharedInformerFactory(
+		clientset,
+		30*time.Second,
+		stsNamespace,
+		func(opt *metav1.ListOptions) {
+			opt.FieldSelector = fmt.Sprintf("metadata.name=%s", stsName)
+		},
+	)
 	stsInformer := stsInformerFactory.Apps().V1().StatefulSets().Informer()
-	// create list options based on name of the statefulset
-	listOptions := metav1.ListOptions{
-		FieldSelector: fmt.Sprintf("metadata.name=%s", stsName),
-	}
 
-	// start watching specific statefulset events
-	log.Printf("Starting watch in an infinite loop on %s/%s\n", stsNamespace, stsName)
-	watchStatefulSetEvents(&listOptions)
-}
-
-func watchStatefulSetEvents(lsOpts *metav1.ListOptions) {
-	namespace := stsNamespace
+	stsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			klog.Info("AddFunc triggered")
+			if err := updateAccumulatorConfig(configNameToUpdate, stsNamespace, obj.(*v1.StatefulSet).Spec.ServiceName, *obj.(*v1.StatefulSet).Spec.Replicas); err != nil {
+				klog.Error(err)
+			}
+		},
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			klog.Info("UpdateFunc triggered")
+			if oldObj.(*v1.StatefulSet).Status.CurrentReplicas != newObj.(*v1.StatefulSet).Status.CurrentReplicas {
+				if err := updateAccumulatorConfig(configNameToUpdate, stsNamespace, newObj.(*v1.StatefulSet).Spec.ServiceName, newObj.(*v1.StatefulSet).Status.CurrentReplicas); err != nil {
+					klog.Error(err)
+				}
+			}
+		},
+		DeleteFunc: func(obj interface{}) {
+			klog.Info("DeleteFunc triggered")
+			if err := updateAccumulatorConfig(configNameToUpdate, stsNamespace, obj.(*v1.StatefulSet).Spec.ServiceName, 0); err != nil {
+				klog.Error(err)
+			}
+		},
+	})
+	stop := make(chan struct{})
+	defer close(stop)
+	stsInformerFactory.Start(stop)
 	for {
-		// error out if runLoop() fails to create a watch client
-		if err := runLoop(namespace, lsOpts); err != nil {
-			log.Fatalf("Error in runLoop: %v\n", err)
-		}
-		// retrigger runLoop() to recretate the watch after 5 seconds
-		log.Println("runLoop() broke the loop to return. Most probably the watch client's channel closed witha timeout")
-		time.Sleep(5 * time.Second)
+		time.Sleep(time.Second)
 	}
 }
 
-// runLoop() creates a watch client based on the namespace and listOptions provided. Incase the watch channel is closed or the watch returns an error, the control is sent back to watchStatefulSetEvents(), which re-initiates the watch after 5 seconds delay.
-func runLoop(namespace string, lsOpts *metav1.ListOptions) error {
-	watcher, err := clientset.AppsV1().StatefulSets(stsNamespace).Watch(*lsOpts)
-	if err != nil {
-		log.Printf("Error creating a watch: %v\n", err)
-		return err
-	}
-	for {
-		select {
-		case event, ok := <-watcher.ResultChan():
-			if !ok {
-				// the watch channel has closed(probably due to timeout)
-				break
-			}
-			if event.Type == watch.Error {
-				// if the event type is error, return the error from the watch event object
-				return apierrors.FromObject(event.Object)
-			}
-			// call event handler function
-			if err := allEventHandler(&event); err != nil {
-				log.Printf("Error: runLoop(): %v\n", err)
-			}
-		}
-	}
-}
+func updateAccumulatorConfig(configmapName, namespace, headlessServiceName string, remoteReadCount int32) error {
+	// TODO:
+	// 1. Updation should happen based on the headlessServiceName and remoteReadCount provided. All remote_read config should not be overwritten
 
-func allEventHandler(event *watch.Event) error {
-	// get the statefulset object from watch event
-	sts, ok := event.Object.(*v1.StatefulSet)
-	if !ok {
-		log.Println("Error: allEventHandler: Invalid object encountered")
-	}
-	// print  sample output: the replica details for that statefulset
-	log.Printf("Event type: %v name: %v, Ready Replicas: %v Current Replicas: %d\n", event.Type, sts.Name, sts.Status.ReadyReplicas, sts.Status.CurrentReplicas)
-	// Begin configmap processing:
-	log.Println("Starting configmap processing...")
+	klog.Infoln("Received a config update request")
+	klog.Infoln("Starting configmap processing...")
 
 	// 1. access the configmap CONFIG_TO_UPDATE data, in the same namespace
-	namespace := stsNamespace
-	configmapName := configNameToUpdate
 	configmapKey := fmt.Sprintf("%s/%s", namespace, configmapName)
 	configmap, err := clientset.CoreV1().ConfigMaps(namespace).Get(configmapName, metav1.GetOptions{})
 	if err != nil {
-		log.Printf("Error: allEventHandler: Error getting the configmap, %s: %v\n", configmapKey, err)
+		klog.Errorf("Error getting the configmap, %s: %v\n", configmapKey, err)
 		return err
 	}
-	log.Printf("Successfully fetched the configmap: %s\n", configmapKey)
+	klog.Infof("Successfully fetched the configmap: %s\n", configmapKey)
 	// 2. get the prometheus.yml from configmap data
 	promtheusConfigData, ok := configmap.Data["prometheus.yml"]
 	if !ok {
-		log.Printf("Error: allEventHandler: Promtheus.yml not found in configmap: %s", configmapKey)
-		return fmt.Errorf("Promtheus.yml not found in configmap: %s", configmapKey)
+		klog.Errorf("promtheus.yml not found in configmap: %s", configmapKey)
+		return fmt.Errorf("promtheus.yml not found in configmap: %s", configmapKey)
 	}
 	// log.Printf("prometheus.yml:\n%s\n", promtheusConfigData)
 	// 3.a. unmarshal the string prometheus.yml data to prometheus config struct objects
 	var prometheusConfig *promconfig.Config
 	if prometheusConfig, err = promconfig.Load(promtheusConfigData); err != nil {
-		log.Printf("Error: allEventHandler: unable to unmarshal the yaml to prometheus config\n")
-		return fmt.Errorf("unable to unmarshal the yaml to prometheus config")
+		klog.Errorf("unable to unmarshal the yaml to prometheus config\n")
+		return err
 	}
 	// 3.b. reset and update the .remote_read list depending on the ReadyReplicas
-	headlessServiceName := sts.Spec.ServiceName
 	var count int32
 	prometheusConfig.RemoteReadConfigs = nil
-	for ; count < sts.Status.CurrentReplicas; count++ {
+	for ; count < remoteReadCount; count++ {
 		urlStr := fmt.Sprintf("http://%s-%d.%s:%d/read", stsName, count, headlessServiceName, prometheusContainerPort)
 		remoteReadURL, err := url.Parse(urlStr)
 		if err != nil {
-			log.Printf("Error: allEventHandler: Cannot parse remoteReadUrl: %v\n", err)
+			klog.Errorf("cannot parse remoteReadUrl: %v\n", err)
 			return err
 		}
 		remoteReadConfig := promconfig.RemoteReadConfig{
@@ -169,8 +151,8 @@ func allEventHandler(event *watch.Event) error {
 	}
 	newPromtheusConfigData, err := yaml.Marshal(prometheusConfig)
 	if err != nil {
-		log.Printf("Error: allEventHandler: Error marshalling the modified prometheusConfig\n")
-		return fmt.Errorf("Error marshalling the modified prometheusConfig")
+		klog.Errorf("error marshalling the modified prometheusConfig\n")
+		return err
 	}
 	// 4. change the prometheus.yml in configmap data
 	configmap.Data["prometheus.yml"] = string(newPromtheusConfigData)
@@ -178,8 +160,9 @@ func allEventHandler(event *watch.Event) error {
 	// 5. update the configmap
 	configmapModified, err := clientset.CoreV1().ConfigMaps(namespace).Update(configmap)
 	if err != nil {
-		log.Printf("Error: allEventHandler: Error returned by api server while updating the configmap: %v\n", err)
+		klog.Errorf("error returned by api server while updating the configmap: %v\n", err)
+		return err
 	}
-	log.Printf("Configmap data updated. Following is the configmap data: %s\n", configmapModified.Data["prometheus.yml"])
+	klog.Infof("Configmap data updated. Following is the configmap data: %s\n", configmapModified.Data["prometheus.yml"])
 	return nil
 }
