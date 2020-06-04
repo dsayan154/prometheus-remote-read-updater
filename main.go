@@ -25,6 +25,7 @@ var (
 	stsNsIsSet, stsNameIsSet, configToUpdateIsSet bool
 	clientset                                     *kubernetes.Clientset
 	prometheusContainerPort                       int
+	lastSeenCurrentReplicas                       int32
 )
 
 func main() {
@@ -120,7 +121,13 @@ func allEventHandler(event *watch.Event) error {
 		log.Println("Error: allEventHandler: Invalid object encountered")
 	}
 	// print  sample output: the replica details for that statefulset
-	log.Printf("Event type: %v name: %v, Ready Replicas: %v Current Replicas: %d\n", event.Type, sts.Name, sts.Status.ReadyReplicas, sts.Status.CurrentReplicas)
+	currentReplicas := sts.Status.ReadyReplicas
+	log.Printf("Event type: %v name: %v, Ready Replicas: %v Current Replicas: %d\n", event.Type, sts.Name, sts.Status.ReadyReplicas, currentReplicas)
+	if lastSeenCurrentReplicas == currentReplicas {
+		log.Println("No change in current replicas. Skipping ... ")
+		return nil
+	}
+	lastSeenCurrentReplicas = currentReplicas
 	// Begin configmap processing:
 	log.Println("Starting configmap processing...")
 
@@ -177,6 +184,6 @@ func allEventHandler(event *watch.Event) error {
 	if err != nil {
 		log.Printf("Error: allEventHandler: Error returned by api server while updating the configmap: %v\n", err)
 	}
-	log.Printf("Configmap data updated. Following is the configmap data: %s\n", configmapModified.Data["prometheus.yml"])
+	log.Printf("Configmap data updated. Following is the configmap data:\n%s\n", configmapModified.Data["prometheus.yml"])
 	return nil
 }
