@@ -26,6 +26,7 @@ var (
 	stsNsIsSet, stsNameIsSet, configToUpdateIsSet bool
 	clientset                                     *kubernetes.Clientset
 	prometheusContainerPort                       int
+	lastSeenCurrentReplicas                       int32
 )
 
 func main() {
@@ -163,6 +164,6 @@ func updateAccumulatorConfig(configmapName, namespace, headlessServiceName strin
 		klog.Errorf("error returned by api server while updating the configmap: %v\n", err)
 		return err
 	}
-	klog.Infof("Configmap data updated. Following is the configmap data: %s\n", configmapModified.Data["prometheus.yml"])
+	log.Printf("Configmap data updated. Following is the configmap data:\n%s\n", configmapModified.Data["prometheus.yml"])
 	return nil
 }
