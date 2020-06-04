@@ -16,6 +16,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -64,6 +65,8 @@ func main() {
 		log.Fatalf("Error creating clientset: %v", err)
 	}
 
+	stsInformerFactory := informers.NewSharedInformerFactory(clientset, 30*time.Second)
+	stsInformer := stsInformerFactory.Apps().V1().StatefulSets().Informer()
 	// create list options based on name of the statefulset
 	listOptions := metav1.ListOptions{
 		FieldSelector: fmt.Sprintf("metadata.name=%s", stsName),
