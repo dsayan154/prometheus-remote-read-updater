@@ -89,6 +89,8 @@ func main() {
 				if err := updateAccumulatorConfig(configNameToUpdate, stsNamespace, newObj.(*v1.StatefulSet).Spec.ServiceName, newObj.(*v1.StatefulSet).Status.CurrentReplicas); err != nil {
 					klog.Error(err)
 				}
+			} else {
+				klog.Info("No change in CurrentReplicas. Skipping ...")
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
