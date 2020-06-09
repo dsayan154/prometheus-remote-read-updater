@@ -52,7 +52,7 @@ func main() {
 	kubeconfig := filepath.Join(os.Getenv("HOME"), ".kube", "config")
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
-		log.Fatalf("Error reading %s: %v\n", kubeconfig, err)
+		log.Printf("Error reading %s: %v\n", kubeconfig, err)
 		log.Println("Trying InClusterConfig()")
 		config, err = clientcmd.BuildConfigFromFlags("", "")
 		if err != nil {
