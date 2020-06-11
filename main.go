@@ -52,7 +52,7 @@ func main() {
 	kubeconfig := filepath.Join(os.Getenv("HOME"), ".kube", "config")
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
-		log.Fatalf("Error reading %s: %v\n", kubeconfig, err)
+		log.Printf("Error reading %s: %v\n", kubeconfig, err)
 		log.Println("Trying InClusterConfig()")
 		config, err = clientcmd.BuildConfigFromFlags("", "")
 		if err != nil {
@@ -89,6 +89,8 @@ func main() {
 				if err := updateAccumulatorConfig(configNameToUpdate, stsNamespace, newObj.(*v1.StatefulSet).Spec.ServiceName, newObj.(*v1.StatefulSet).Status.CurrentReplicas); err != nil {
 					klog.Error(err)
 				}
+			} else {
+				klog.Info("No change in CurrentReplicas. Skipping ...")
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
@@ -138,7 +140,7 @@ func updateAccumulatorConfig(configmapName, namespace, headlessServiceName strin
 	var count int32
 	prometheusConfig.RemoteReadConfigs = nil
 	for ; count < remoteReadCount; count++ {
-		urlStr := fmt.Sprintf("http://%s-%d.%s:%d/read", stsName, count, headlessServiceName, prometheusContainerPort)
+		urlStr := fmt.Sprintf("http://%s-%d.%s:%d/api/v1/read", stsName, count, headlessServiceName, prometheusContainerPort)
 		remoteReadURL, err := url.Parse(urlStr)
 		if err != nil {
 			klog.Errorf("cannot parse remoteReadUrl: %v\n", err)
