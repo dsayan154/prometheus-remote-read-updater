@@ -140,7 +140,7 @@ func updateAccumulatorConfig(configmapName, namespace, headlessServiceName strin
 	var count int32
 	prometheusConfig.RemoteReadConfigs = nil
 	for ; count < remoteReadCount; count++ {
-		urlStr := fmt.Sprintf("http://%s-%d.%s:%d/read", stsName, count, headlessServiceName, prometheusContainerPort)
+		urlStr := fmt.Sprintf("http://%s-%d.%s:%d/api/v1/read", stsName, count, headlessServiceName, prometheusContainerPort)
 		remoteReadURL, err := url.Parse(urlStr)
 		if err != nil {
 			klog.Errorf("cannot parse remoteReadUrl: %v\n", err)
