@@ -19,3 +19,6 @@ custom controller to update the remote-read configs for a prometheus instance ba
 ### Components to be used:
 1. [HPA](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/)
 2. Kubernetes custom controller (accumulator-config-generator)
+
+### This repo contains the custom controller code
+Image: [dsayan154/prometheus-remote-read-updater](https://hub.docker.com/repository/docker/dsayan154/prometheus-remote-read-updater)
