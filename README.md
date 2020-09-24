@@ -8,6 +8,6 @@ The controller requires the following environment variables to be set to work pr
 |---|---|
 |**STS_NAME**|statefulset to be watched|
 |**NAMESPACE**|namespace of the statefulset to be watched|
-|**CONFIG_TO_UPDATE**configmap containing the prometheus configuration("prometheus.yml")|
+|**CONFIG_TO_UPDATE**|configmap containing the prometheus configuration("prometheus.yml")|
 
 <sup>Image: [dsayan154/prometheus-remote-read-updater](https://hub.docker.com/repository/docker/dsayan154/prometheus-remote-read-updater)</sup>
