@@ -4,7 +4,6 @@ The watched statefulset pods are meant to be prometheus shards and the configmap
 
 ## Environment variables
 The controller requires the following environment variables to be set to work properly<br>
-|   |   |
 |---|---|
 |**STS_NAME**|statefulset to be watched|
 |**NAMESPACE**|namespace of the statefulset to be watched|
